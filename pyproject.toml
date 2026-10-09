@@ -1,0 +1,42 @@
+[tool.ruff]
+target-version = "py313"
+line-length = 120
+
+[tool.ruff.lint]
+select = [
+    "E",     # pycodestyle
+    "F",     # pyflakes: unused imports/variables, undefined names
+    "I",     # isort
+    "N",     # pep8-naming
+    "UP",    # pyupgrade
+    "B",     # flake8-bugbear
+    "S",     # flake8-bandit
+    "ASYNC", # flake8-async
+    "C4",    # flake8-comprehensions
+    "DTZ",   # timezone-aware datetimes only
+    "T20",   # no print() in application code
+    "RUF",
+]
+ignore = [
+    "B008",   # FastAPI uses Depends() as a default argument
+    "S104",   # binding 0.0.0.0 is required inside a container
+    "N818",   # AppException is the established name
+]
+
+[tool.ruff.lint.per-file-ignores]
+"alembic/*" = ["N999", "E501"]
+"alembic/versions/*" = ["F401"]   # an empty revision does not use the template's imports yet
+"app/errors/codes.py" = ["E501"]
+"app/schemas/*.py" = ["N815"]   # camelCase fields mirror the Evolution API payload
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+plugins = ["pydantic.mypy"]

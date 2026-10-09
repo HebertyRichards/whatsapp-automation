@@ -1,0 +1,20 @@
+# Direct dependencies with the accepted ranges. Edit THIS file.
+#
+# requirements.txt is the resolved lock (and what the Dockerfile installs).
+# Regenerate it after changing anything here:
+#
+#     uv pip compile requirements.in -o requirements.txt --universal --python-version 3.13
+#
+# Major versions are capped: minor/patch releases come in on the next compile, a major needs a review.
+
+fastapi>=0.143,<1
+uvicorn[standard]>=0.54,<1
+pydantic>=2.14,<3
+pydantic-settings>=2.15,<3
+sqlalchemy[asyncio]>=2.1,<3
+asyncpg>=0.32,<1
+alembic>=1.20,<2
+alembic-postgresql-enum>=1.10,<2
+redis>=8.1,<9
+httpx>=0.28,<1
+tzdata
