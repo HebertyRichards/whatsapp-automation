@@ -1,20 +1,13 @@
-import enum
 from datetime import time
-from decimal import Decimal
 
-from sqlalchemy import CheckConstraint, Numeric, SmallInteger, String, Time
+from sqlalchemy import CheckConstraint, SmallInteger, String, Time
 from sqlalchemy.orm import Mapped, mapped_column
 
-from .base import Base, pg_enum
-
-
-class HalfHalfPricing(enum.StrEnum):
-    HIGHEST = "highest"
-    AVERAGE = "average"
+from .base import Base
 
 
 class StoreSettings(Base):
-    """Single row (id is always 1) with what the owner tunes without a deploy."""
+    """Single row (id is always 1) with what the owner tunes without a deploy. Modules keep their own settings."""
 
     __tablename__ = "store_settings"
     __table_args__ = (CheckConstraint("id = 1", name="ck_store_settings_single_row"),)
@@ -22,12 +15,7 @@ class StoreSettings(Base):
     id: Mapped[int] = mapped_column(SmallInteger, primary_key=True, autoincrement=False)
     name: Mapped[str] = mapped_column(String(80))
     timezone: Mapped[str] = mapped_column(String(64), server_default="America/Sao_Paulo")
-    delivery_fee: Mapped[Decimal] = mapped_column(Numeric(10, 2))
-    half_half_pricing: Mapped[HalfHalfPricing] = mapped_column(
-        pg_enum(HalfHalfPricing, "half_half_pricing"),
-        server_default=HalfHalfPricing.HIGHEST.value,
-    )
-    # WhatsApp JID (group or number) that receives new orders and attendant requests.
+    business_type: Mapped[str] = mapped_column(String(32))
     staff_jid: Mapped[str | None] = mapped_column(String(64))
 
 

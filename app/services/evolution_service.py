@@ -1,9 +1,11 @@
 import logging
+from collections import deque
 
 import httpx
 
 from app.config.settings import get_settings
 from app.errors import AppException, ErrorCode
+from app.services.messenger import Messenger
 from app.utils.circuit_breaker import CircuitBreaker
 
 logger = logging.getLogger(__name__)
@@ -14,6 +16,20 @@ _TIMEOUT_SECONDS = 15.0
 # One client for the whole process: a new AsyncClient per call would redo DNS + TCP + TLS every time.
 _client: httpx.AsyncClient | None = None
 _breaker = CircuitBreaker(failure_threshold=5, recovery_timeout=30.0, name="evolution")
+_sent_ids: deque[str] = deque(maxlen=500)
+
+
+def sent_by_bot(message_id: str) -> bool:
+    return message_id in _sent_ids
+
+
+def _remember(response: httpx.Response) -> None:
+    try:
+        message_id = response.json()["key"]["id"]
+    except (ValueError, KeyError, TypeError):
+        return
+    if isinstance(message_id, str):
+        _sent_ids.append(message_id)
 
 
 def _http() -> httpx.AsyncClient:
@@ -30,7 +46,7 @@ async def close_evolution_client() -> None:
     _client = None
 
 
-class EvolutionService:
+class EvolutionService(Messenger):
     """Outbound HTTP client for the Evolution API."""
 
     async def send_text(self, jid: str, text: str, delay_ms: int = 0) -> None:
@@ -60,3 +76,4 @@ class EvolutionService:
         if response.is_error:
             logger.error("Evolution rejected sendText (%s): %s", response.status_code, response.text)
             raise AppException(ErrorCode.EVOLUTION_REJECTED)
+        _remember(response)

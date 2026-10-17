@@ -1,14 +1,18 @@
 import asyncio
 import logging
+from collections import Counter
+from collections.abc import Callable, Coroutine
 
 from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config.database import SessionLocal
 from app.config.settings import get_settings
 from app.errors import AppException
 from app.schemas.webhook_schemas import InboundMessage, WebhookEvent
 from app.services.conversation_service import ConversationService
-from app.services.evolution_service import EvolutionService
+from app.services.evolution_service import sent_by_bot
+from app.services.messenger import Messenger
 from app.utils import rate_limit
 from app.utils.keyed_lock import KeyedLock
 
@@ -40,71 +44,101 @@ _SHUTDOWN_GRACE_SECONDS = 20
 class InboundService:
     """Turns webhook events into conversation turns, one customer at a time."""
 
-    def __init__(self) -> None:
-        self._evolution = EvolutionService()
+    def __init__(self, messenger: Messenger, conversation: Callable[[AsyncSession], ConversationService]) -> None:
+        self._messenger = messenger
+        self._conversation = conversation
         self._locks = KeyedLock()
+        self._answering: Counter[str] = Counter()
         # Strong references: the event loop only keeps weak ones to running tasks.
         self._tasks: set[asyncio.Task[None]] = set()
 
     async def accept(self, event: WebhookEvent) -> bool:
         """Queues the message and returns at once, so the webhook is acknowledged before any reply is typed.
 
-        False means the event was ignored on purpose.
+        False means the event was ignored on purpose. Every call logs one line saying why.
         """
-        if event.event != _MESSAGES_UPSERT or event.instance != get_settings().evolution_instance:
-            return False
+        queued, reason = await self._triage(event)
+        logger.info("Webhook %s %s: %s", event.event, "queued" if queued else "ignored", reason)
+        return queued
+
+    async def _triage(self, event: WebhookEvent) -> tuple[bool, str]:
+        if event.event != _MESSAGES_UPSERT:
+            return False, "not a new message"
+        if event.instance != get_settings().evolution_instance:
+            return False, f"instance {event.instance!r} is not this bot's"
         try:
             message = InboundMessage.model_validate(event.data)
         except ValidationError:
-            logger.warning("Ignoring a messages.upsert event with an unexpected payload")
-            return False
+            return False, "unexpected payload"
 
         jid = message.key.remoteJid
-        if message.key.fromMe or not jid.endswith(_DIRECT_CHAT_SUFFIXES):
-            return False
+        if not jid.endswith(_DIRECT_CHAT_SUFFIXES):
+            return False, f"{jid} is not a one-to-one chat"
         text = message.text
         if text is None and message.messageType not in _MEDIA_TYPES:
-            return False
+            return False, f"{jid} sent a {message.messageType}, nothing to answer"
+        age = message.age_seconds()
+        # How late the message reached the bot: a delay here comes from before the bot, not from it.
+        arrived = f"{jid}, {'age unknown' if age is None else f'{age}s after it was sent'}"
         if message.is_older_than(_STALE_AFTER_SECONDS):
-            logger.info("Ignoring a stale message from %s", jid)
-            return False
+            return False, f"stale message from {arrived}"
         if not await rate_limit.first_delivery(message.key.id):
-            return False
-        if not await rate_limit.allow_message(jid):
-            logger.warning("Rate limit reached for %s; message dropped", jid)
-            return False
+            return False, f"repeated delivery of {message.key.id} from {arrived}"
+        if message.key.fromMe:
+            self._spawn(self._takeover(jid, message.key.id))
+            return True, f"written by the store in the chat with {arrived}"
+        if not rate_limit.allow_message(jid):
+            return False, f"rate limit reached by {arrived}"
 
-        task = asyncio.create_task(self._process(jid, text, message.pushName))
+        during_reply = self._answering[jid] > 0
+        self._answering[jid] += 1
+        self._spawn(self._process(jid, text, message.pushName, during_reply))
+        return True, f"customer message from {arrived}" + (", sent during a reply" if during_reply else "")
+
+    def _spawn(self, work: Coroutine[None, None, None]) -> None:
+        task = asyncio.create_task(work)
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
-        return True
 
-    async def _process(self, jid: str, text: str | None, push_name: str | None) -> None:
-        # The lock covers the sends too, so a customer's next message waits for the replies to this one.
+    async def _takeover(self, jid: str, message_id: str) -> None:
+        # Same lock as the replies: an echo of the bot's own message is only judged after its id is known.
         async with self._locks.hold(jid):
+            if sent_by_bot(message_id):
+                return
             try:
                 async with SessionLocal() as session:
-                    replies = await ConversationService(session, self._evolution).handle(jid, text, push_name)
+                    await self._conversation(session).human_takeover(jid)
                     await session.commit()
             except Exception:
-                logger.exception("Could not process a message from %s", jid)
+                logger.exception("Could not hand the chat with %s over to the attendant", jid)
                 return
+            logger.info("Attendant wrote to %s; the bot stays out of this chat", jid)
 
-            for reply in replies:
+    async def _process(self, jid: str, text: str | None, push_name: str | None, during_reply: bool) -> None:
+        try:
+            async with self._locks.hold(jid):
                 try:
-                    await self._evolution.send_text(jid, reply.text, reply.delay_ms)
-                except AppException as e:
-                    logger.error("Reply to %s was not delivered: %s", jid, e.message)
+                    async with SessionLocal() as session:
+                        replies = await self._conversation(session).handle(
+                            jid, text, push_name, during_reply=during_reply
+                        )
+                        await session.commit()
+                except Exception:
+                    logger.exception("Could not process a message from %s", jid)
                     return
+
+                for reply in replies:
+                    try:
+                        await self._messenger.send_text(jid, reply.text, reply.delay_ms)
+                    except AppException as e:
+                        logger.error("Reply to %s was not delivered: %s", jid, e.message)
+                        return
+        finally:
+            self._answering[jid] -= 1
+            if not self._answering[jid]:
+                del self._answering[jid]
 
     async def shutdown(self) -> None:
         """Gives in-flight conversations a moment to finish replying."""
         if self._tasks:
             await asyncio.wait(self._tasks, timeout=_SHUTDOWN_GRACE_SECONDS)
-
-
-_inbound_service = InboundService()
-
-
-def get_inbound_service() -> InboundService:
-    return _inbound_service

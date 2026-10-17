@@ -12,24 +12,17 @@ from app.utils.circuit_breaker import CircuitBreaker
 logger = logging.getLogger(__name__)
 
 SUPERVISOR_INTERVAL = 15.0
+# Redis answers in milliseconds and every caller fails open, so a stuck connection must give up fast:
+# the webhook waits on these calls before it is acknowledged.
+_TIMEOUT_SECONDS = 1.0
 
 
 class RedisLike(Protocol):
-    async def incr(self, key: str) -> int: ...
-
-    async def expire(self, key: str, seconds: int) -> None: ...
-
     async def set_if_absent(self, key: str, ttl_seconds: int) -> bool: ...
 
 
 class NullRedis:
     """Stand-in while Redis is disabled or down: every caller fails open."""
-
-    async def incr(self, key: str) -> int:
-        return 1
-
-    async def expire(self, key: str, seconds: int) -> None:
-        return None
 
     async def set_if_absent(self, key: str, ttl_seconds: int) -> bool:
         return True
@@ -51,12 +44,6 @@ class _BreakerRedis:
         self._breaker.record_success()
         return result
 
-    async def incr(self, key: str) -> int:
-        return int(await self._run(self._client.incr(key)))
-
-    async def expire(self, key: str, seconds: int) -> None:
-        await self._run(self._client.expire(key, seconds))
-
     async def set_if_absent(self, key: str, ttl_seconds: int) -> bool:
         return bool(await self._run(self._client.set(key, "1", ex=ttl_seconds, nx=True)))
 
@@ -76,7 +63,12 @@ def _is_disabled() -> bool:
 async def _connect_once() -> bool:
     global _client, _guarded
     try:
-        client = redis.asyncio.from_url(get_settings().redis_url, decode_responses=True)
+        client = redis.asyncio.from_url(
+            get_settings().redis_url,
+            decode_responses=True,
+            socket_timeout=_TIMEOUT_SECONDS,
+            socket_connect_timeout=_TIMEOUT_SECONDS,
+        )
         await client.ping()
     except Exception as e:
         logger.warning("Redis unavailable: %s", e)
@@ -115,7 +107,7 @@ async def _supervisor() -> None:
 async def init_redis() -> None:
     global _supervisor_task
     if _is_disabled():
-        logger.warning("Redis disabled (REDIS_ENABLED=false or empty REDIS_URL): no de-duplication or rate limit.")
+        logger.warning("Redis disabled (REDIS_ENABLED=false or empty REDIS_URL): de-duplication runs in memory only.")
         return
     if await _connect_once():
         logger.info("Redis connected.")

@@ -28,6 +28,7 @@ ignore = [
 "alembic/versions/*" = ["F401"]   # an empty revision does not use the template's imports yet
 "app/errors/codes.py" = ["E501"]
 "app/schemas/*.py" = ["N815"]   # camelCase fields mirror the Evolution API payload
+"tests/*" = ["S101", "S105", "S106"]   # pytest asserts, fake secrets
 
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
@@ -40,3 +41,13 @@ indent-style = "space"
 python_version = "3.13"
 strict = true
 plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+# Reports and the cache stay out of the repo: results/ is git-ignored.
+cache_dir = "results/.pytest_cache"
+addopts = "--junitxml=results/junit.xml"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "session"
+asyncio_default_test_loop_scope = "session"

@@ -1,8 +1,8 @@
 from fastapi import APIRouter, Depends, status
 
 from app.schemas.webhook_schemas import WebhookAck, WebhookEvent
-from app.services.inbound_service import InboundService, get_inbound_service
-from app.utils.dependencies import verify_webhook_secret
+from app.services.inbound_service import InboundService
+from app.utils.dependencies import get_inbound_service, verify_webhook_secret
 
 webhook_tag_metadata = {
     "name": "Webhook",

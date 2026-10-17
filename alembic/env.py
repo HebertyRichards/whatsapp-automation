@@ -7,6 +7,9 @@ from sqlalchemy.engine import Connection
 from alembic import context
 from app.config.database import engine
 from app.models import Base
+from app.modules import import_models
+
+import_models()
 
 config = context.config
 

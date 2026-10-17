@@ -1,13 +1,21 @@
--- First-time store setup. The bot reads everything it shows from these tables.
--- Replace the sample menu below with the real one, then run this file once
--- (Railway "Data" tab, Supabase SQL editor, Neon SQL editor or psql).
+-- First-time setup of a store that takes orders (pizzeria, snack bar, pharmacy...).
+-- The bot reads everything it shows from these tables. Replace the sample menu below with
+-- the real one, then run this file once (Railway "Data" tab, Supabase or Neon SQL editor, psql).
 
 BEGIN;
 
--- Single row. half_half_pricing: 'highest' charges the pricier flavor, 'average' the mean of both.
+-- Single row. business_type picks the module that runs the conversation.
 -- staff_jid: WhatsApp JID (group or number) that receives orders and attendant requests.
-INSERT INTO store_settings (id, name, timezone, delivery_fee, half_half_pricing, staff_jid)
-VALUES (1, 'Pizzaria Exemplo', 'America/Sao_Paulo', 5.00, 'highest', NULL);
+INSERT INTO store_settings (id, name, timezone, business_type, staff_jid)
+VALUES (1, 'Pizzaria Exemplo', 'America/Sao_Paulo', 'orders', NULL);
+
+-- Single row. half_half_pricing: 'highest' charges the pricier flavor, 'average' the mean of both.
+INSERT INTO order_settings (id, delivery_fee, half_half_pricing)
+VALUES (1, 5.00, 'highest');
+
+-- Optional: reword any of the bot's texts. The key is the constant's name in app/utils/messages.py
+-- or app/modules/orders/messages.py; {loja} is replaced by the store name.
+-- INSERT INTO texts (key, value) VALUES ('WELCOME', 'Oi! Aqui é a *{loja}*. Vamos montar seu pedido?');
 
 -- weekday: 1 = Monday ... 7 = Sunday. Days without a row are closed.
 -- closes_at at or before opens_at means the shift ends on the next day.

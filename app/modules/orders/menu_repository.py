@@ -3,7 +3,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Drink, PizzaCategory, PizzaFlavor, PizzaPrice, PizzaSize
+from app.modules.orders.models import Drink, PizzaCategory, PizzaFlavor, PizzaPrice, PizzaSize
 
 
 class MenuRepository:

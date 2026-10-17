@@ -12,7 +12,8 @@ from app.errors import register_exception_handlers
 from app.repositories.store_repository import StoreRepository
 from app.routes.webhook_routes import webhook_routes, webhook_tag_metadata
 from app.services.evolution_service import close_evolution_client
-from app.services.inbound_service import get_inbound_service
+from app.utils.body_limit import BodyLimit
+from app.utils.dependencies import get_inbound_service
 
 settings = get_settings()
 
@@ -38,6 +39,7 @@ app = FastAPI(
 )
 
 register_exception_handlers(app)
+app.add_middleware(BodyLimit)
 
 app.include_router(webhook_routes)
 

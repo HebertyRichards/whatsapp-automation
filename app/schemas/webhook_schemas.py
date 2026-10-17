@@ -29,7 +29,6 @@ class ExtendedText(BaseModel):
 class MessageContent(BaseModel):
     conversation: str | None = None
     extendedTextMessage: ExtendedText | None = None
-    # Chats with disappearing messages may wrap the real content.
     ephemeralMessage: "WrappedMessage | None" = None
 
     @property
@@ -59,6 +58,10 @@ class InboundMessage(BaseModel):
     @property
     def text(self) -> str | None:
         return self.message.text if self.message else None
+
+    def age_seconds(self) -> int | None:
+        sent_at = self.messageTimestamp
+        return int(time.time()) - sent_at if isinstance(sent_at, int) else None
 
     def is_older_than(self, seconds: int) -> bool:
         sent_at = self.messageTimestamp

@@ -32,7 +32,8 @@ Order
 ├─ Flavor                    (two flavors for half-and-half)
 ├─ Cart                      1 another pizza | 2 drink | 3 checkout | 4 remove an item
 ├─ Name                      (free text)
-├─ Pickup or delivery        (delivery asks for the address, free text)
+├─ Pickup or delivery
+│  └─ Delivery address       postal code → confirm the street found → number → complement
 ├─ Payment                   cash (asks about change) | card | Pix
 └─ Summary                   1 confirm | 2 cancel
 ```
@@ -48,6 +49,28 @@ Commands available along the way:
 
 Payment is not charged by the bot: it records the method and the store collects on delivery or pickup.
 
+### Delivery address
+
+The customer types the postal code (CEP, with or without the hyphen), the bot looks it up on
+[ViaCEP](https://viacep.com.br) and shows the street for confirmation, then asks for the number and
+whether there is a complement. The address is typed in full instead, as `street, number`, when the
+customer does not know the postal code, when the code covers a whole town, or when ViaCEP is down.
+
+### Human attendant
+
+The bot leaves a chat in two situations:
+
+- the customer asks for an attendant (`0`), which also alerts the staff;
+- someone on the store's side writes in that chat, from the phone or WhatsApp Web. This works with or
+  without an order in progress, so a customer answering the attendant is never greeted by the bot.
+
+It comes back when the customer types `menu`, or once the chat has been quiet for 15 minutes, counting
+messages from both sides. Nothing is sent at that point: the next message from the customer simply
+starts a new session.
+
+> Turn off WhatsApp Business automatic messages (greeting, away) on the bot's number. They are sent
+> from the phone, so the bot reads them as an attendant writing and goes quiet in that chat.
+
 ## Project layout
 
 ```
@@ -56,14 +79,17 @@ app/
   routes/          thin HTTP layer (the webhook)
   services/        business logic
     inbound_service.py        filters events, de-duplicates, queues per customer
-    conversation_service.py   the ordering flow (state machine)
-    order_service.py          pricing and order creation
-    evolution_service.py      HTTP client for the Evolution API
+    conversation_service.py   session, commands valid everywhere, hand-off to a human
+    steps/                    one class per step: its question, its answer, where "voltar" leads
+    order_service.py          pricing, order creation and the staff alert
+    messenger.py              the outbound channel, as an interface
+    evolution_service.py      the Evolution API behind that interface
+    cep_service.py            postal code lookup (ViaCEP)
   repositories/    SQLAlchemy queries only
   schemas/         Pydantic models (webhook payload, cart draft, quotes)
   models/          SQLAlchemy tables
   errors/          AppException, error codes, handlers
-  utils/           circuit breaker, rate limit, opening hours, money, message copy
+  utils/           circuit breaker, rate limit, opening hours, money, message copy, wiring
   config/          settings, database engine, Redis client, logging
 alembic/           migrations
 sql/               first-time store setup (example data)
@@ -71,6 +97,12 @@ sql/               first-time store setup (example data)
 
 Request path: **route → service → repository → database**. All customer-facing text lives in
 `app/utils/messages.py`.
+
+Services receive what they use through the constructor. `app/utils/dependencies.py` is the only file
+that names the concrete classes, so another message provider is a new `Messenger` plus one line there.
+
+To add a step: its value in the `Step` enum, a `StepHandler` subclass in `services/steps/` and its
+entry in `build_steps`.
 
 ## Requirements
 
@@ -248,9 +280,10 @@ memory, which is also why the container starts a single worker.
 
 | Rule | Value | Where to change |
 |---|---|---|
-| Typing delay | 4s welcome, 2s replies, 1s page turns | `conversation_service.py` |
+| Typing delay | 4s welcome, 2s replies, 1s page turns | `steps/base.py` |
 | Session timeout | 30 minutes of silence | `conversation_service.py` |
-| Pagination | lists above 30 entries, 15 per page | `conversation_service.py` |
+| Human mode timeout | 15 minutes without a message from either side | `conversation_service.py` |
+| Pagination | lists above 30 entries, 15 per page | `steps/base.py` |
 | Rate limit | 30 messages per minute per customer | `utils/rate_limit.py` |
 | Opening hours | checked when a session starts | `opening_hours` table |
 | Delivery fee | flat | `store_settings.delivery_fee` |
@@ -269,14 +302,26 @@ Details worth knowing:
 - **Two invalid answers in a row** add a hint about talking to an attendant.
 - **Messages older than 10 minutes are ignored**, so a backlog replayed after a reconnect does not
   trigger a burst of late replies.
+- **A burst gets one answer.** A message sent while the bot is still answering the previous one is
+  acted on only if it is a valid answer; otherwise it gets no reply. "oi", "boa noite", "quero pizza"
+  in a row produce one welcome and one menu, not two "não entendi".
+- **The same message is never answered twice.** Repeated webhook deliveries are dropped by message
+  id in memory, with or without Redis.
+- **Every webhook logs one line** with the decision and how late the message reached the bot. A large
+  delay there comes from Evolution (retries, history sync), not from the bot.
 
 ### Failure handling
 
-- **Redis** is optional and fails open. Without it there is no webhook de-duplication and no rate
-  limit; everything else works. A circuit breaker stops the bot from hammering a Redis that is down,
-  and a supervisor reconnects on its own.
+- **Redis** is optional and fails open. Without it there is no rate limit, and de-duplication does not
+  survive a restart; everything else works. Each Redis call gives up after 1 second, so a stuck
+  connection never holds the webhook. A circuit breaker stops the bot from hammering a Redis that is
+  down, and a supervisor reconnects on its own. On Railway, reference the internal URL
+  (`${{Redis.REDIS_URL}}`), not the public `*.proxy.rlwy.net` one.
 - **Evolution API** calls go through a circuit breaker too: after 5 consecutive failures the bot stops
   calling it for 30 seconds.
+- **ViaCEP** is a free public API with no key and no uptime guarantee. A lookup that fails or takes
+  more than 5 seconds sends the customer to the typed address; after 3 failures in a row the bot skips
+  the lookup for 60 seconds.
 - `/health` is a liveness probe. `/ready` checks the database and that the store is configured.
 
 ## Operational notes

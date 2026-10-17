@@ -28,5 +28,7 @@ USER appuser
 
 EXPOSE 8000
 
+# Migrations run before the server starts: a new deploy, or a new store, gets its tables with no manual step.
 # One worker on purpose: per-customer locks and the circuit breakers live in process memory.
-CMD ["sh", "-c", "uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]
+# exec hands SIGTERM to uvicorn, so replies in flight get their shutdown grace period.
+CMD ["sh", "-c", "alembic upgrade head && exec uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000} --workers 1"]

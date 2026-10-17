@@ -2,18 +2,16 @@ from decimal import ROUND_HALF_UP, Decimal
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Customer, Fulfillment, HalfHalfPricing, Order, OrderItem, StoreSettings
-from app.repositories.menu_repository import MenuRepository
-from app.repositories.order_repository import OrderRepository
-from app.schemas.conversation_schemas import Checkout, Draft, DrinkItem, PizzaItem
-from app.schemas.order_schemas import Quote, QuoteLine
-from app.utils import messages
+from app.models import Customer, StoreSettings
+from app.modules.orders import messages
+from app.modules.orders.menu_repository import MenuRepository
+from app.modules.orders.models import Fulfillment, HalfHalfPricing, Order, OrderItem, OrderSettings
+from app.modules.orders.order_repository import OrderRepository
+from app.modules.orders.schemas import Checkout, DrinkItem, OrderDraft, PizzaItem, Quote, QuoteLine
+from app.services.messenger import Messenger
+from app.services.steps.base import StaleDraftError
 
 _CENT = Decimal("0.01")
-
-
-class StaleDraftError(Exception):
-    """The saved draft no longer matches the menu, or lacks data the current step relies on."""
 
 
 def half_half_price(rule: HalfHalfPricing, first: Decimal, second: Decimal) -> Decimal:
@@ -24,13 +22,18 @@ def half_half_price(rule: HalfHalfPricing, first: Decimal, second: Decimal) -> D
 
 
 class OrderService:
-    def __init__(self, db: AsyncSession) -> None:
+    def __init__(self, db: AsyncSession, menu: MenuRepository, orders: OrderRepository, messenger: Messenger) -> None:
         self.db = db
-        self.menu = MenuRepository(db)
-        self.orders = OrderRepository(db)
+        self.menu = menu
+        self.orders = orders
+        self.messenger = messenger
 
-    async def quote(self, draft: Draft, store: StoreSettings) -> Quote:
+    async def settings(self) -> OrderSettings:
+        return await self.orders.settings()
+
+    async def quote(self, draft: OrderDraft) -> Quote:
         """Prices the draft from the current menu, so no total ever comes from stored numbers."""
+        settings = await self.settings()
         pizzas = [item for item in draft.items if isinstance(item, PizzaItem)]
         size_ids = {pizza.size_id for pizza in pizzas}
         flavor_ids = {flavor_id for pizza in pizzas for flavor_id in pizza.flavor_ids}
@@ -63,7 +66,7 @@ class OrderService:
                         description=messages.pizza_description(size.name, item.half, names),
                         quantity=item.quantity,
                         unit_price=half_half_price(
-                            store.half_half_pricing, prices[first, size.id], prices[second, size.id]
+                            settings.half_half_pricing, prices[first, size.id], prices[second, size.id]
                         ),
                         size_id=size.id,
                         flavor_id=first,
@@ -73,8 +76,21 @@ class OrderService:
         except (KeyError, IndexError) as e:
             raise StaleDraftError from e
 
-        delivery_fee = store.delivery_fee if draft.fulfillment is Fulfillment.DELIVERY else Decimal("0")
+        delivery_fee = settings.delivery_fee if draft.fulfillment is Fulfillment.DELIVERY else Decimal("0")
         return Quote(lines=lines, delivery_fee=delivery_fee)
+
+    async def place(self, customer: Customer, store: StoreSettings, quote: Quote, checkout: Checkout) -> Order:
+        """Stores the order and alerts the staff, raising AppException when the alert fails.
+
+        The kitchen must hear about every stored order, so a failed alert rolls the order back.
+        """
+        async with self.db.begin_nested():
+            order = await self.create(customer, quote, checkout)
+            if store.staff_jid:
+                await self.messenger.send_text(
+                    store.staff_jid, messages.staff_order(order.id, quote, checkout, customer.jid)
+                )
+        return order
 
     async def create(self, customer: Customer, quote: Quote, checkout: Checkout) -> Order:
         order = Order(

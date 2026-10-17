@@ -12,6 +12,9 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 
+# Test reports and caches (pytest writes here; see pyproject.toml).
+results/
+
 .idea/
 .vscode/
 .DS_Store
